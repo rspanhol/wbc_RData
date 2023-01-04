@@ -1,0 +1,219 @@
+rm(list = ls())
+
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(tictoc)
+
+#install.packages("parallel")
+#install.packages("doParallel")
+#cargar datos
+
+getwd()
+
+load("wbc_data.RData")
+
+glimpse(wbc)
+
+#Division de los datos en train y test
+
+set.seed(777)
+wbc_split <- initial_split(wbc, strata = diagnosis)
+
+wbc_train <- training(wbc_split)
+wbc_test <- testing(wbc_split)
+
+
+
+wbc_train %>% tabyl(diagnosis)
+wbc_test %>% tabyl(diagnosis)
+
+
+#Plantear un workflow
+
+knn_recipe <- recipe(diagnosis ~., data= wbc_train) %>% 
+                step_normalize(all_predictors())
+
+knn_recipe
+
+
+#Plantear el modelo
+
+knn_mod <- nearest_neighbor(neighbors = tune(), weight_func = tune(),
+                                  dist_power = tune()) %>% 
+                              set_engine("kknn") %>% 
+                              set_mode("classification")
+
+knn_mod
+
+
+#Construir un workflow
+
+wk1 <- workflow() %>% 
+                add_recipe(knn_recipe) %>% 
+                add_model(knn_mod)
+
+wk1
+
+
+#Plantear en primer lugar los folds de la validación cruzada
+
+set.seed(777)
+wbc_folds <- vfold_cv(wbc_train, v = 10, strata = diagnosis)
+
+
+wbc_folds$splits[[1]][1]
+
+
+#El planteamiento del ajuste de K, dist_power, weigth_func
+#
+#
+#Cuadriculas(grids) regulares
+#
+
+knn_params <- parameters(neighbors(range = c(1,50)),
+                         dist_power(range = c(1,2)),
+                         weight_func(values_weight_func[1:10]))
+
+
+knn_params
+
+
+knn_reg_grid <- grid_regular(knn_params,
+                             levels=c(50,5,10))
+
+knn_reg_grid
+
+#Un gráfico de una regular grid
+
+
+knn_reg_grid %>% 
+  ggplot(aes(x=neighbors, y = dist_power, color=  weight_func))+
+  geom_point() + facet_wrap(~weight_func)
+
+
+#Parelización del modelo a evaluar
+#
+
+mis_metricas <- metric_set(accuracy,roc_auc)
+
+parallel::detectCores()
+
+clus <- parallel::makeCluster(8)
+doParallel::registerDoParallel(clus)
+tic()
+knn_regular_res <- tune_grid(
+  wk1,
+  resamples = wbc_folds,
+  control = control_resamples(save_pred = TRUE),
+  grid = knn_reg_grid,
+  metrics = mis_metricas)
+
+
+
+toc()
+
+#1123.78 segundos
+#
+#
+
+
+knn_regular_res %>% autoplot()
+
+
+
+knn_regular_res %>% 
+  collect_metrics(summarize= TRUE) %>% arrange(desc(mean))
+
+
+knn_regular_res %>% show_best(metric= "roc_auc", n= 1)
+
+
+
+#Modelo 2 con cuadriculas irregulares
+#
+
+knn_random_grid <- grid_random(knn_params,size = 50)
+
+
+knn_random_grid %>% 
+  ggplot(aes(x = neighbors, y = dist_power))+
+  geom_point(aes(color = weight_func))
+
+
+clus <- parallel::makeCluster(8)
+doParallel::registerDoParallel(clus)
+tic()
+knn_random_res <- tune_grid(
+  wk1,
+  resamples = wbc_folds,
+  control = control_resamples(save_pred = TRUE),
+  grid = knn_random_grid,
+  metrics = mis_metricas)
+
+
+
+toc()
+
+#Tiempo de ejecución 117.49 segundos
+#
+knn_random_res %>% autoplot()
+
+#Comparar los modelos
+
+knn_regular_res %>% show_best(metric= "roc_auc", n= 1)
+knn_random_res %>% show_best(metric= "roc_auc", n= 1)
+
+
+#Modelo a escoger
+
+knn_best <- knn_regular_res %>% tune::select_best(metric= "roc_auc")
+
+knn_best
+#Finalización del modelo knn que usa el mejor ajuste (tune)
+
+knn_mod_final <- knn_mod %>% finalize_model(knn_best)
+
+knn_mod_final
+
+
+#Finalizar el recipe
+
+knn_recipe_final <- knn_recipe %>% 
+  finalize_recipe(knn_best)
+
+knn_recipe
+
+
+wk1
+wk_final <- wk1 %>% 
+  update_recipe(knn_recipe_final) %>% 
+  update_model(knn_mod_final)
+
+wk_final
+
+
+#Se corre el último ajuste del modelo
+#
+
+ 
+knn_final_res <- last_fit(
+  wk_final, split = wbc_split)
+
+
+
+
+knn_final_res %>% collect_metrics()
+
+
+knn_final_res %>% 
+  collect_predictions() %>% 
+  roc_curve(truth= diagnosis, estimator= .pred_M) %>% 
+  autoplot()
+
+
+
+
+knn_final_res %>% 
+  collect_predictions() %>% 
+  conf_mat(truth= diagnosis,estimate = .pred_class) %>% autoplot()
