@@ -109,7 +109,7 @@ knn_regular_res <- tune_grid(
   grid = knn_reg_grid,
   metrics = mis_metricas)
 
-
+parallel::stopCluster(clus)
 
 toc()
 
@@ -153,7 +153,7 @@ knn_random_res <- tune_grid(
   grid = knn_random_grid,
   metrics = mis_metricas)
 
-
+parallel::stopCluster(clus)
 
 toc()
 
